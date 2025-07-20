@@ -1,0 +1,148 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+st.set_page_config(layout="wide")
+st.title("2024-25 시즌 EPL BIG7 클럽 재정 및 성적 기반 예측 (전체 20팀 & 1~2위 TOP4 보장)")
+
+# BIG7 클럽
+big7_clubs = ["맨시티", "아스날", "리버풀", "맨유", "첼시", "토트넘", "뉴캐슬"]
+
+# 2024-25 성적 순위 (EPL 20팀 중 일부)
+performance_rank = {
+    "맨시티": 3,
+    "아스날": 2,
+    "리버풀": 1,
+    "맨유": 15,
+    "첼시": 4,
+    "토트넘": 17,
+    "뉴캐슬": 5,
+}
+
+# 수익 데이터 (백만 파운드)
+revenues = {
+    "맨시티": {"EPL 상금": 170, "클럽월드컵": 22.5, "유럽대항전": 0},
+    "아스날": {"EPL 상금": 165, "클럽월드컵": 0, "유럽대항전": 60},
+    "리버풀": {"EPL 상금": 160, "클럽월드컵": 0, "유럽대항전": 50},
+    "맨유": {"EPL 상금": 150, "클럽월드컵": 0, "유럽대항전": 32},
+    "첼시": {"EPL 상금": 155, "클럽월드컵": 120.625, "유럽대항전": 46.8},  # 유럽대항전 31.2 + 15.6 추가
+    "토트넘": {"EPL 상금": 145, "클럽월드컵": 0, "유럽대항전": 42},
+    "뉴캐슬": {"EPL 상금": 140, "클럽월드컵": 0, "유럽대항전": 0},
+}
+
+# 나머지 13팀 (6위부터 20위) — 이름은 임의, 성적과 수익 점수는 임의 생성 (실제로는 정확 데이터 필요)
+other_teams = [f"팀{i}" for i in range(6,21)]
+other_performance_ranks = list(range(6,21))
+
+np.random.seed(123)
+# 재정 점수 랜덤 생성 (0.2~0.8), 성적 점수는 exp 함수로 감점
+other_finance_scores = np.random.uniform(0.2, 0.8, size=15)
+other_perf_scores = np.exp(-0.3 * (np.array(other_performance_ranks) - 1))
+other_perf_scores = (other_perf_scores - other_perf_scores.min()) / (other_perf_scores.max() - other_perf_scores.min())
+
+# BIG7 데이터프레임 생성
+data = {}
+for club in big7_clubs:
+    rev = revenues[club]
+    total = sum(rev.values())
+    rev["총수익"] = total
+    data[club] = rev
+
+df_big7 = pd.DataFrame(data).T
+df_big7["클럽"] = df_big7.index
+df_big7["2024-25 순위"] = df_big7["클럽"].map(performance_rank)
+df_big7["재정 점수"] = (df_big7["총수익"] - df_big7["총수익"].min()) / (df_big7["총수익"].max() - df_big7["총수익"].min())
+
+def exp_rank_score(rank):
+    return np.exp(-0.3 * (rank - 1))
+
+df_big7["성적 점수"] = df_big7["2024-25 순위"].apply(exp_rank_score)
+df_big7["성적 점수"] = (df_big7["성적 점수"] - df_big7["성적 점수"].min()) / (df_big7["성적 점수"].max() - df_big7["성적 점수"].min())
+
+# 나머지 13팀 데이터프레임
+df_others = pd.DataFrame({
+    "클럽": other_teams,
+    "2024-25 순위": other_performance_ranks,
+    "재정 점수": other_finance_scores,
+    "성적 점수": other_perf_scores
+})
+
+# BIG7 + 나머지 팀 합치기
+df_all = pd.concat([df_big7[["클럽","2024-25 순위","재정 점수","성적 점수"]], df_others], ignore_index=True)
+
+# 가중치
+w_finance = 0.2
+w_performance = 0.8
+
+df_all["종합 점수"] = df_all["재정 점수"] * w_finance + df_all["성적 점수"] * w_performance
+
+# 점수 내림차순 정렬
+df_all = df_all.sort_values("종합 점수", ascending=False).reset_index(drop=True)
+
+# 예측 순위 부여(1~20)
+df_all["예측 순위 (raw)"] = df_all.index + 1
+
+# 1,2위는 반드시 리버풀, 아스날, 맨시티, 첼시 중에 있어야 함
+top4 = ["리버풀", "아스날", "맨시티", "첼시"]
+
+top2_clubs = df_all.loc[df_all["예측 순위 (raw)"].isin([1, 2]), "클럽"].tolist()
+if not any(c in top4 for c in top2_clubs):
+    # top4 중 점수 높은 2개 팀 찾아서 1,2위로 강제 배치
+    top4_scores = df_all[df_all["클럽"].isin(top4)].sort_values("종합 점수", ascending=False)
+    first, second = top4_scores.iloc[0]["클럽"], top4_scores.iloc[1]["클럽"]
+
+    # 1, 2위 팀 자리 할당
+    df_all.loc[0, "클럽"] = first
+    df_all.loc[1, "클럽"] = second
+
+    # 첫 두 순위 제외한 나머지에서 중복된 top4 팀 제거
+    for club in [first, second]:
+        duplicates = df_all[(df_all["클럽"] == club) & (df_all.index > 1)].index
+        df_all.drop(duplicates, inplace=True)
+
+    # 인덱스 리셋 및 예측 순위 다시 부여
+    df_all = df_all.reset_index(drop=True)
+    df_all["예측 순위 (raw)"] = df_all.index + 1
+
+# BIG7 팀은 원래 순위 ±1 범위 내로 클리핑
+clip_candidates = big7_clubs
+
+def clip_rank(pred_rank, orig_rank):
+    return int(np.clip(pred_rank, orig_rank -1, orig_rank +1))
+
+def clip_row(row):
+    if row["클럽"] in clip_candidates:
+        orig_rank = df_big7.loc[df_big7["클럽"]==row["클럽"], "2024-25 순위"].values[0]
+        return clip_rank(row["예측 순위 (raw)"], orig_rank)
+    else:
+        return row["예측 순위 (raw)"]
+
+df_all["예측 순위 (clip)"] = df_all.apply(clip_row, axis=1)
+
+# 중복 순위 문제 해결: "예측 순위 (clip)"으로 정렬,  
+# 같으면 전 시즌 성적 우수한 팀(순위 낮은) 우선 정렬,  
+# 그리고 1부터 다시 순위 부여
+df_all = df_all.sort_values(by=["예측 순위 (clip)", "2024-25 순위"])
+df_all["최종 예측 순위 (2025-26)"] = range(1, len(df_all) + 1)
+
+# BIG7 팀만 결과 표에 보이도록 필터링
+df_final = df_all[df_all["클럽"].isin(big7_clubs)].copy()
+
+# 결과 출력
+st.subheader("2024-25 시즌 EPL BIG7 및 기타 팀 재정 및 성적 기반 예측")
+st.dataframe(df_final[["클럽", "2024-25 순위", "종합 점수", "예측 순위 (raw)", "예측 순위 (clip)", "최종 예측 순위 (2025-26)"]])
+
+# 대회별 수익 시각화는 BIG7만 보여줌
+df_big7_display = df_big7.copy()
+df_big7_display["총수익"] = df_big7_display["총수익"].round(2)
+st.subheader("BIG7 클럽별 대회별 수익 (백만 파운드)")
+st.dataframe(df_big7_display[["클럽", "EPL 상금", "클럽월드컵", "유럽대항전", "총수익"]])
+
+if st.button("BIG7 대회별 수익 그래프 보기"):
+    fig, ax = plt.subplots(figsize=(12,6))
+    df_big7_display[["EPL 상금", "클럽월드컵", "유럽대항전"]].plot(kind="bar", stacked=True, ax=ax)
+    ax.set_xticklabels(df_big7_display["클럽"], rotation=45)
+    ax.set_ylabel("수익 (백만 파운드)")
+    ax.set_title("BIG7 클럽 대회별 수익 구성")
+    st.pyplot(fig)
